@@ -1,10 +1,8 @@
 # Kubernetes の概要
 
-Kubernetesの概要を、`docker-compose`をスタートにして説明します。
+Kubernetesの概要を、`docker-compose`をスタートにして説明。
 
 ## `docker-compose`
-
-(demo. ローカルでdocker-compose。構成は簡単にCentOSのアプリがGETに対して返すだけ)
 
 `docker-compose`は、これだけでもかなりいいもの。優れている。
 
@@ -16,15 +14,16 @@ Kubernetesの概要を、`docker-compose`をスタートにして説明します
 
 - 可用性確保の困難さがある
   - docker-composeは、一つのVMの中で動かさなきゃ行けない。冗長性を考慮して複数のVMからなるクラスター構成にしようとしても、Nginx, Keepalived(ipvs), percona, zookeeperなどの、クラスター管理ツールを導入しなければならない。これはオンプレでやっているのと変わらない。
-- EC2のVMの面倒をみなければならない
+- EC2やELBのVMの面倒をみなければならない
   - EC2のVMのカーネルに脆弱性が出た場合、カーネルアップデートをしなければならない。これ、既にサービスが動いているときだと、かなりリスクある。EC2をもう一台立てて、
   - ログの肥大化を気にしたりだとか、VMにログインして諸々操作することから、VMへのアクセス経路や、そのセキュリティも考慮しなければならない。
+  - ELBの設定の手間がある。特に拡張しようとバックエンドのアプリを一つ増やすときに、ELBの設定をしなければならない。
 
 ## Kubernetesでの解決
 
 ### Kubernetesとは
 
-コンテナオーケストレーターと呼ばれるもの。つまりコンテナを動かせる環境。実態は、しかるべきアプリがインストールされたVMの集まり。
+コンテナオーケストレーターと呼ばれるもの。つまりコンテナを動かせる環境。実態は、しかるべきアプリがインストールされたVM(EC2)の集まり。
 
 demo
 
@@ -33,46 +32,86 @@ demo
 - 同じdeployment.yamlをapplyする。
 - すぐにインターネット上で利用できるようになることを確認する。
 
-### docker-composeの良いところを引き継いでいる
+## 最初にdocker-composeをカバーしていることに
 
-- 宣言的(start, stop)
-- 動的な変更
-- networking
+ファイルをデプロイする。-> これだけで何が起きているか
 
-### docker-composeの課題を解消している
+- containerが動く
+- LBがデプロイされる
+- globalIPがついて、プロキシの設定まで行われる
 
-例えば可用性について
+この時点でdocker-composeに比べて優位性がある
 
-demo
+- `docker-compose up -d`に近いオペレーション。簡単。
+- EC2にログインしてdockerをインストールする、という手間が必要ない。そもそもEC2の面倒をみなくてもいい。EC2の面倒は私たちの管轄外。
+- ログインやアクセス経路に関するセキュリティの考慮をする必要がなくなる。
+- docker-composeの場合、グローバルに公開するときに、ELBを明示的に設定する必要がある。そうしなくても、kubernetes上でこれができる。
 
-- 一度VMを削除してみる。-> また立ち上がることを確認する
-- VMを削除してみる -> どこかで勝手に立ち上がることを確認する
+## docker-composeよりさらに優位なこと
 
--> 簡単に可用性の確保ができた
+### 負荷分散と冗長性
 
-例えばNodeの扱いについて
+準備
 
-- EKSだと、Nodeにログインできない。ログインする用事がないので。
+- curlで繰り返し
+- get po を繰り返し
 
-## さらに抜粋
 
-Updateのしやすさ。ローリングアップデート
--> サービスを止めずに、安全にアップデートを行う
+デプロイメントのreplicasを3にする
 
-EKSだと特に、リソースの自動調整を行うことができる
+ここで優位性がある
 
-ログ管理どうするも、サイドカーパターンで解決
+- docker-composeの場合、ELBのプロキシ設定は自分で頑張る必要があるが、それも必要ない。勝手に理想的な状態になってくれる。
 
-blue/green deployment, Canary Release -> Istioでできる。
+podを一つ止めてみる。
 
-カオスエンジニアリング、これはやったことがないけど、サービスの継続性を見るのにちょうどいい
+- 再開する
 
--> これらがあるのは、KubernetesやCloudNativeのmの盛り上がりにある。
+nodeを減らす
 
-ちょっと前はSwarmやMesosがあった。でも、今はKubernetesがデファクトになった。エコシステムが盛り上がって、Kubernetesで面倒なyamlの管理や、microseviceのツールも出てきている。
+```bash
+eksctl scale nodegroup --cluster=demo -r us-west-1 --nodes=2 --nodes-min=1  ng-0e5d60b0
+```
+### Update
 
-## Kubernetesに不向きなこと
+updateしてみる。ちょっとreturnを変更して。
 
-オンプレはやめたほうがいい。
+```bash
+docker build -t kenchaaan/k8sintro-python:1.0.2 . && docker push kenchaaan k8sintro-python 
+```
 
-Kubernetesを自前で作って管理するのは、管理コストのほうが高くなって意味がない。これならdocker-composeにすべき。逆にクラウドならdocker-composeは貧弱すぎてだめ。
+そして、dockerhubをみてみる
+
+そして、versionのタグを変更してみ
+
+- サービスが止まらないまま、徐々に新しいバージョンに移行している
+
+また動かないやつにしてみる。
+
+そしてtagを変更してみる
+
+- サービスは止まらない
+
+### そのほか
+
+- fargate: 勝手にノードが増減する
+- EKSで動けば、Azureでも動く。以前はそういう仕事をしていた。
+- cronjob
+- ロギング -> sidecar patternというテンプレ構成. cloudwatchも使える
+- metric -> これもsidecar
+- microservice
+- CI/CD Argo, Travis-CI, Blue/Green Deployment, Canary Release -> Istio
+- CNCF https://landscape.cncf.io/ 盛り上がりが違う
+- Chaos Engineering
+
+- kubernetes以外の選択肢
+  - Swarm, Mesos -> 負けた。まずpublic cloud が全部kubernetes, VMwareもkubernetesにかけてる。
+
+- 事例
+  - 調べりゃわんさか出てくる
+
+
+## kubernetesがはまらないところ
+
+- オンプレでk8sはやる意味なし. docker-composeにする。RancherやOpenShift, Tanzuなどがあるが、自分でやる意味なし。
+- Storageの扱いは注意。Operatorを使うか、そもそもStatefulなものは外に出す。
